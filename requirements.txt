@@ -24,3 +24,7 @@ tqdm
 # Optional: Keep Google AI for future use
 # langchain-google-genai
 # google-generativeai
+
+rich
+
+
