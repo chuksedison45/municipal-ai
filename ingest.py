@@ -1,59 +1,93 @@
 import os
-import time
-from unstructured.partition.pdf import partition_pdf
+import re
+import pdfplumber
+from pathlib import Path
 
 # --- CONFIGURATION ---
-PDF_PATH = "source_data/test_file.pdf"
-OCR_TEXT_CACHE = "full_text_ocr.txt"  # File to save/load OCR results
+PDF_PATH = Path("source_data/test_file.pdf")
+OUTPUT_FILE = Path("full_text_ocr.txt")
 
-def get_ocr_text(strategy="hi_res"):
-    """
-    Performs OCR and saves the result to a cache file.
-    If the cache file already exists, it loads from there instead.
-    """
-    # 1. VALIDATE PDF PATH: Check if the source PDF file exists.
-    if not os.path.exists(PDF_PATH):
-        print(f"❌ Error: The file '{PDF_PATH}' was not found.")
-        print("Please make sure the PDF is in the 'source_data' directory.")
-        return None
+class MunicipalIngestor:
+    def __init__(self, file_path: Path):
+        self.file_path = file_path
 
-    # 2. CACHE CHECK: Check if the processed text file already exists.
-    if os.path.exists(OCR_TEXT_CACHE):
-        print(f"✅ Found cached OCR text. Loading from '{OCR_TEXT_CACHE}'...")
-        with open(OCR_TEXT_CACHE, 'r', encoding='utf-8') as f:
-            return f.read()
+    def extract_clean_text(self):
+        """
+        Extracts text using safe page boundaries and high tolerance to
+        capture characters near margins without triggering ValueErrors.
+        """
+        if not self.file_path.exists():
+            print(f"❌ Error: {self.file_path} not found.")
+            return ""
 
-    # If cache doesn't exist, run the OCR process (we'll build this next)
-    print(f"📜 No cache found. Starting OCR process on '{PDF_PATH}'...")
-    print("This may take a few minutes...")
+        extracted_pages = []
 
-    # 3. OCR
-    start_time = time.time()
+        print(f"📖 Processing {self.file_path}...")
+        with pdfplumber.open(self.file_path) as pdf:
+            for page in pdf.pages:
+                width = page.width
+                height = page.height
+                midpoint = width / 2
 
-    # Use unstructured's partition_pdf with an OCR strategy.
-    # This will automatically use OCR when text extraction is difficult.
-    elements = partition_pdf(
-        filename=PDF_PATH,
-        strategy=strategy, # "hi_res" is a powerful strategy
-        infer_table_structure=True,
-        model_name="yolox"
-    )
+                # SAFE BOUNDARIES: Clamping to 0 and page width to avoid ValueError
+                # We use a slight overlap (2 points) at the midpoint to ensure no text is lost in the gutter.
+                left_bbox = (0, 0, midpoint + 2, height)
+                right_bbox = (midpoint - 2, 0, width, height)
 
-    full_text = "\n\n".join([str(el) for el in elements])
+                # TOLERANCE: x_tolerance=3 catches characters that might be
+                # physically near the edge but technically offset in the PDF's text layer.
+                left_text = page.crop(left_bbox).extract_text(x_tolerance=3, y_tolerance=3) or ""
+                right_text = page.crop(right_bbox).extract_text(x_tolerance=3, y_tolerance=3) or ""
 
-    end_time = time.time()
-    print(f"⏱️ OCR process finished in {end_time - start_time:.2f} seconds.")
+                extracted_pages.append(left_text + "\n" + right_text)
 
-    print(f"💾 Saving OCR text to cache file: '{OCR_TEXT_CACHE}'")
-    with open(OCR_TEXT_CACHE, 'w', encoding='utf-8') as f:
-        f.write(full_text)
+        full_text = "\n".join(extracted_pages)
+        return self._post_process(full_text)
 
-    return full_text
+    def _post_process(self, text: str) -> str:
+        """Removes page numbers and artifacts while preserving legal structure."""
+
+        # 1. REMOVE ARTIFACTS: Cleans backslashes and source markers
+        text = re.sub(r"\\", '', text)
 
 
-if __name__ == '__main__':
-    extracted_text = get_ocr_text()
-    print("\n--- Verification ---")
-    print(f"Successfully retrieved {len(extracted_text)} characters.")
-    print(f"Sample: {extracted_text[:400]}...")
+        # 2. REMOVE PAGE NUMBERS: Matches standalone numbers like 409 or 410
+        # Matches lines that contain only a 1-4 digit number.
+        text = re.sub(r'(?m)^\s*\d{1,4}\s*$', '', text)
 
+        # 3. FIX HYPHENATION: Joins words split across lines [cite: 6, 10, 12, 14, 15, 22]
+        # e.g., 'exer- cise' -> 'exercise', 'emer- gency' -> 'emergency'
+        text = re.sub(r'(\w+)-\s*\n\s*(\w+)', r'\1\2', text)
+
+        # 4. NORMALIZE WHITESPACE: Ensures consistent spacing for the vector DB
+        text = re.sub(r'[ \t]+', ' ', text)
+        text = re.sub(r'\n{3,}', '\n\n', text)
+
+        return text.strip()
+
+def main():
+    ingestor = MunicipalIngestor(PDF_PATH)
+    clean_text = ingestor.extract_clean_text()
+
+    if clean_text:
+        # Exporting specifically to 'full_text_ocr.txt' for Lab 2
+        OUTPUT_FILE.write_text(clean_text, encoding="utf-8")
+        print(f"✅ Success! Clean text exported to '{OUTPUT_FILE}'")
+
+        # Verification of key sections from the provided PDF [cite: 5, 24]
+        print("\n--- Content Verification ---")
+        if "12.12.010" in clean_text:
+            print("Found Section 12.12.010 [cite: 5]")
+        if "12.12.020" in clean_text:
+            print("Found Section 12.12.020 [cite: 24, 28]")
+
+        # Verify specific legal citations were preserved [cite: 23, 33]
+        if "Prior code §" in clean_text:
+            print("Found 'Prior code' citations [cite: 23, 33]")
+
+        print(f"\nPreview (First 300 chars):\n{'-'*20}\n{clean_text[:300]}\n{'-'*20}")
+    else:
+        print("❌ Extraction failed.")
+
+if __name__ == "__main__":
+    main()

@@ -13,7 +13,8 @@ chromadb
 # FREE Embeddings (no API needed)
 sentence-transformers
 huggingface-hub
-langchain-huggingface
+# langchain-huggingface
+langchain-ollama
 torch  # Optional, but helps with embeddings
 
 # Utilities

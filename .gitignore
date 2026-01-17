@@ -1,5 +1,11 @@
 # Environment and local data
+.venv/
 venv/
+env/
+ENV/
+. env/
+.env/
+*.bak/
 source_data/
 chroma_db/
 *.sqlite3
@@ -16,4 +22,7 @@ source_data/
 .ipynb_checkpoints/
 logs/
 *.log
+figures/
+output/
+.env
 
